@@ -1,0 +1,284 @@
+\documentclass[11pt]{article}
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage{fontspec}
+\usepackage{xeCJK}
+\setmainfont{TeX Gyre Pagella}
+\setCJKmainfont{Noto Serif CJK SC}
+\setCJKsansfont{Noto Sans CJK SC}
+\usepackage{amsmath,amssymb,amsthm,mathtools,bm}
+\usepackage{booktabs,array}
+\usepackage{enumitem}
+\usepackage[dvipsnames]{xcolor}
+\usepackage[most]{tcolorbox}
+\usepackage{hyperref}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{microtype}
+\usepackage{setspace}
+\usepackage{graphicx}
+\hypersetup{colorlinks=true,linkcolor=MidnightBlue,urlcolor=MidnightBlue}
+\definecolor{Accent}{HTML}{1F4E79}
+\definecolor{LightAccent}{HTML}{EAF2F8}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{动态元规则网络}
+\fancyhead[R]{理论整理稿}
+\setlength{\headheight}{14pt}
+\titleformat{\section}{\Large\bfseries\color{Accent}}{}{0em}{}
+\setlist[itemize]{topsep=2pt,itemsep=2pt,leftmargin=1.6em}
+\setlist[enumerate]{topsep=2pt,itemsep=2pt,leftmargin=1.8em}
+\onehalfspacing
+
+\newtcolorbox{defbox}[1]{enhanced,breakable,colback=LightAccent,colframe=Accent,
+fonttitle=\bfseries,coltitle=white,colbacktitle=Accent,boxrule=0.6pt,left=8pt,right=8pt,top=6pt,bottom=6pt,title={#1}}
+\newtcolorbox{propbox}[1]{enhanced,breakable,colback=white,colframe=Accent,
+fonttitle=\bfseries,coltitle=white,colbacktitle=Accent!88!black,boxrule=0.7pt,left=8pt,right=8pt,top=6pt,bottom=6pt,title={#1}}
+
+\newcommand{\Explain}{\par\smallskip\noindent\textbf{解释.}\ }
+\newcommand{\Remark}{\par\smallskip\noindent\textbf{说明.}\ }
+\newcommand{\Proof}{\par\smallskip\noindent\textbf{论证.}\ }
+
+\begin{document}
+
+\begin{titlepage}
+\centering
+\vspace*{1.8cm}
+{\Huge\bfseries 动态元规则网络\\[0.35em]}
+{\Large \color{Accent}一种“元规则 + 动态记忆 + 动态权重”模型的形式化表达\\}
+\vspace{1.2cm}
+\begin{tcolorbox}[width=0.9\textwidth,colback=LightAccent,colframe=Accent,boxrule=0.7pt]
+\small
+\textbf{摘要}\quad 本文将“模型不再只依赖预制固定权重，而是把学习、写入、调用知识的\emph{元规则}固化下来，并在推理过程中通过快记忆、慢记忆与动态权重持续生成当前网络”的想法，整理为一组统一的数学对象。全文采用“定义 + 命题 + 解释”的结构：先定义静态模型、动态元规则网络、快记忆/慢记忆、巩固机制与 Transformer 实例化；再给出若干结构性命题，说明静态大模型是该框架的特例、系统可被视作状态空间模型、动态权重的影响可被有界控制，以及重复验证过的经验如何从短期痕迹沉淀为长期记忆。本文目标不是给出经验性能定理，而是为后续理论化、算法化与实验化提供一套干净的记号系统。
+\end{tcolorbox}
+\end{titlepage}
+
+\section*{一、引言与建模目标}
+标准大语言模型通常写成
+\[
+ y = f(x;W),
+\]
+其中输入 $x$ 经过固定权重 $W$ 的前向传播得到输出 $y$。在这种写法里，大部分知识都被“烤”进了参数 $W$ 中；推理阶段主要更新的是上下文状态，而不是模型本身的知识结构。
+
+本文考虑的设想则不同：我们希望把\textbf{具体知识}与\textbf{学习知识的通用规则}分开。于是，模型中长期稳定的部分不再直接承载全部事实，而是承载一套元规则，例如：
+\begin{itemize}
+  \item 什么信息值得写入；
+  \item 如何根据记忆动态生成当前所需的局部权重；
+  \item 什么经验应被巩固为长期知识，什么经验只应作为短期状态保留。
+\end{itemize}
+在这个意义上，模型不只是“存储知识的容器”，而更像“持续生成和修正自身局部结构的机制”。
+
+\begin{tcolorbox}[breakable,colback=LightAccent,colframe=Accent,boxrule=0.6pt]
+\textbf{本文的目标}\quad 给出一个最小而统一的数学框架，使以下思想可以被清晰表述：
+\[
+\text{慢参数存元规则，快状态存经验，当前网络由二者共同生成。}
+\]
+\end{tcolorbox}
+
+\section*{二、基本对象与统一记号}
+
+\begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.18\textwidth} p{0.72\textwidth}}
+\toprule
+符号 & 含义 \\
+\midrule
+$x_t$ & 时刻 $t$ 的输入（文本、任务、环境观察等） \\
+$y_t$ & 时刻 $t$ 的输出 \\
+$W^{\mathrm{slow}}$ & 长期稳定的慢权重，主要承载元规则 \\
+$M_t$ & 快记忆（short-term / working memory） \\
+$K_t$ & 慢记忆（long-term memory state） \\
+$\theta$ & 控制编码、写入、检索、巩固等机制的元规则参数 \\
+$G_\theta$ & 动态权重生成器 \\
+$U_\theta$ & 快记忆更新规则 \\
+$C_\theta$ & 巩固映射，用于把快记忆压缩到长期记忆 \\
+$e_t$ & 反馈信号，例如损失、自检残差、奖励或外部纠错 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{defbox}{定义一：静态预制模型}
+若一个模型在推理阶段使用固定参数 $W$，并满足
+\[
+ y_t = f(x_t;W),
+\]
+且不存在随输入在线改变的内部可写知识载体，则称该模型为\textbf{静态预制模型}。
+\end{defbox}
+\Explain 这是最熟悉的标准写法。训练结束以后，模型的能力大体由固定参数决定；会话中的短期上下文虽然会影响输出，但不被视为模型参数结构的持续更新。
+
+\begin{defbox}{定义二：动态元规则网络}
+设 $W^{\mathrm{slow}}$ 为慢权重，$M_t$ 为快记忆，$K_t$ 为慢记忆，$\theta$ 为元规则参数。若模型在时刻 $t$ 的有效权重定义为
+\[
+ W_t = W^{\mathrm{slow}} + G_\theta(M_t,K_t,x_t),
+\]
+并据此输出
+\[
+ y_t = f(x_t;W_t),
+\]
+则称该系统为一个\textbf{动态元规则网络}。
+\end{defbox}
+\Explain 这里真正“参与当前推理”的不是单一固定权重，而是\emph{慢权重 + 记忆诱导出的动态修正}。因此，模型面对同一个输入时，可能因为历史经验不同而临时生成不同的局部网络。
+
+\begin{defbox}{定义三：快记忆更新}
+设 $e_t$ 为反馈信号。若快记忆满足递推
+\[
+ M_{t+1}=U_\theta(M_t,x_t,y_t,e_t),
+\]
+则称 $U_\theta$ 为\textbf{快记忆更新规则}。
+
+一个常见的受门控实例为
+\[
+ z_t = \Phi_\theta(x_t,M_t,y_t,e_t), \qquad
+ \alpha_t = \sigma\!\bigl(a_\theta(x_t,M_t,e_t)\bigr),
+\]
+\[
+ M_{t+1}=\lambda M_t + \alpha_t z_t,
+\qquad 0\le \lambda \le 1,
+\]
+其中 $z_t$ 为本次经验的摘要，$\alpha_t$ 为写入强度，$\lambda$ 为遗忘系数。
+\end{defbox}
+\Explain 这一定义把“是否写入、写入多少、遗忘多少”全部显式化了。于是“重要经验写得更深、普通经验写得更浅”的想法就可以变成可学习的门控规则，而不是口头描述。
+
+\begin{defbox}{定义四：长期巩固}
+若长期记忆状态满足
+\[
+ K_{t+1}=(1-\rho_t)K_t + \rho_t C_\theta(M_{t+1}),
+\qquad 0\le \rho_t \le 1,
+\]
+则称 $C_\theta$ 为\textbf{巩固映射}，$\rho_t$ 为\textbf{巩固强度}。
+\end{defbox}
+\Explain $M_t$ 更像工作记忆或暂存痕迹；$K_t$ 更像较稳定的长期记忆。不是每次经历都应立即永久写入，而是先形成短期痕迹，再在验证、重复或高置信条件下逐渐沉淀。
+
+\begin{defbox}{定义五：Transformer 实例化}
+设某一 Transformer 的第 $l$ 层静态参数为 $W^{(l)}_{\mathrm{slow}}$。若将其替换为
+\[
+ W_t^{(l)} = W^{(l)}_{\mathrm{slow}} + G^{(l)}_\theta(M_t,K_t),
+\]
+并据此计算
+\[
+ Q_t^{(l)} = H_t^{(l)}W_{t}^{Q,(l)},\qquad
+ K_t^{(l)} = H_t^{(l)}W_{t}^{K,(l)},\qquad
+ V_t^{(l)} = H_t^{(l)}W_{t}^{V,(l)},
+\]
+则称该层为\textbf{动态调制的 Transformer 层}。
+\end{defbox}
+\Explain 这说明你的设想并不要求抛弃 Transformer，而是允许在保留基本结构的同时，让注意力投影矩阵、前馈层或门控参数受到当前记忆状态的调制。
+
+\section*{三、结构性命题}
+
+\begin{propbox}{命题一：静态模型是该框架的特例}
+若对任意 $(M_t,K_t,x_t)$ 都有
+\[
+ G_\theta(M_t,K_t,x_t) \equiv 0,
+\]
+且 $U_\theta$ 与 $C_\theta$ 不产生有效写入（例如 $M_{t+1}=M_t$ 且 $K_{t+1}=K_t$），则动态元规则网络退化为静态预制模型。
+\end{propbox}
+\Proof 此时 $W_t = W^{\mathrm{slow}}$，故
+\[
+ y_t = f(x_t;W^{\mathrm{slow}}),
+\]
+与“静态预制模型”的定义一致，且记忆状态对后续计算不再产生影响。
+\Explain 这说明动态元规则网络并不是对标准模型的否定，而是一个\emph{更大}的模型族。静态大模型可以被看作“动态部分被关闭时”的边界情形。
+
+\begin{propbox}{命题二：系统可写成状态空间形式}
+固定 $\theta$ 与 $W^{\mathrm{slow}}$ 后，动态元规则网络可被写成状态空间系统
+\[
+ S_t=(M_t,K_t),
+\]
+\[
+ y_t = F_\theta(x_t,S_t),
+\qquad
+ S_{t+1}=T_\theta(S_t,x_t,y_t,e_t),
+\]
+其中 $F_\theta$ 与 $T_\theta$ 由 $f,G_\theta,U_\theta,C_\theta$ 组合而成。
+\end{propbox}
+\Proof 由定义可知，$W_t$ 由 $(x_t,M_t,K_t)$ 决定，从而 $y_t$ 由 $(x_t,S_t)$ 决定；又因 $(M_{t+1},K_{t+1})$ 完全由 $(S_t,x_t,y_t,e_t)$ 递推得到，因此可写成上述状态更新形式。
+\Explain 这个命题很重要，因为它把你的想法变成了一个标准的“有内部状态的动力系统”。一旦写成这个形式，就可以进一步讨论稳定性、可塑性、可控性和收敛行为。
+
+\begin{propbox}{命题三：动态权重扰动的影响可被有界控制}
+设基模型对权重的变化是 $L$-Lipschitz 的，即对任意固定输入 $x$，有
+\[
+ \|f(x;W_1)-f(x;W_2)\| \le L\|W_1-W_2\|.
+\]
+若对所有时刻 $t$ 都满足
+\[
+ \|G_\theta(M_t,K_t,x_t)\| \le B,
+\]
+则动态元规则网络与对应静态基模型 $f(x_t;W^{\mathrm{slow}})$ 的输出偏差满足
+\[
+ \|y_t - f(x_t;W^{\mathrm{slow}})\| \le LB.
+\]
+\end{propbox}
+\Proof 由
+\[
+ W_t - W^{\mathrm{slow}} = G_\theta(M_t,K_t,x_t)
+\]
+以及 Lipschitz 条件，直接得到
+\[
+ \|f(x_t;W_t)-f(x_t;W^{\mathrm{slow}})\| \le L\|G_\theta(M_t,K_t,x_t)\| \le LB.
+\]
+\Explain 这个命题表达的是“可塑性可以是受控的”。动态权重不必意味着网络会无限漂移；只要修正项被门控、正则化或范数约束，它对基模型的偏离就能保持在有限范围内。
+
+\begin{propbox}{命题四：重复验证的经验可以沉淀为长期记忆}
+考虑一个简化巩固过程：存在某个固定经验向量 $z$，且每轮均被验证为值得长期保存，于是
+\[
+ K_{t+1}=(1-\rho)K_t + \rho z,
+\qquad 0<\rho\le 1.
+\]
+则序列 $\{K_t\}$ 收敛，且
+\[
+ \lim_{t\to\infty} K_t = z.
+\]
+\end{propbox}
+\Proof 将递推改写为
+\[
+ K_{t+1}-z = (1-\rho)(K_t-z).
+\]
+于是
+\[
+ K_t-z = (1-\rho)^t (K_0-z).
+\]
+由于 $0<\rho\le 1$，故 $|1-\rho|<1$，从而 $(1-\rho)^t\to 0$，得 $K_t\to z$。
+\Explain 这是“永久性记忆”最简单的数学雏形：重复且被验证的经验，会通过巩固机制把长期记忆逐渐拉向该经验本身。现实系统当然会更复杂，但这个命题已经捕捉到了你想表达的核心方向。
+
+\begin{propbox}{命题五：元规则与知识内容可以时间尺度分离}
+若在某一在线运行阶段内，元规则参数 $(W^{\mathrm{slow}},\theta)$ 保持不变，而只有 $(M_t,K_t)$ 随经历更新，则系统表现为：
+\begin{enumerate}
+  \item 元规则决定\emph{如何学习}；
+  \item 记忆状态决定\emph{当前学到了什么}；
+  \item 当前输出同时受二者影响。
+\end{enumerate}
+\end{propbox}
+\Proof 由上述定义可知，推理时 $W_t$ 由固定的生成规则 $G_\theta$ 作用在可变状态 $(M_t,K_t)$ 上得到；因此，规则与内容在时间尺度上被显式拆分。
+\Explain 这正是“把知识从固定权重里部分剥离出来，只把通用学习规则稳定保存”的数学表达。慢参数学的是\emph{写入、调用、巩固的规则}，快状态承载的是\emph{此时此地的经验内容}。
+
+\section*{四、讨论：这一框架到底表达了什么}
+从以上定义和命题可以看出，这个框架并不是简单地“让模型在推理时继续训练”；更准确地说，它把一个智能系统拆成了三层：
+\begin{enumerate}
+  \item \textbf{稳定层}：元规则参数 $(W^{\mathrm{slow}},\theta)$，负责“如何学”；
+  \item \textbf{快层}：$M_t$，负责写入当前经验、保留短期痕迹与工作记忆；
+  \item \textbf{慢层}：$K_t$，负责把反复验证的内容沉淀成更持久的知识状态。
+\end{enumerate}
+因此，模型的知识不再全被压进一个静态矩阵，而是分布在\emph{慢规则 + 快状态 + 慢状态}的联合系统中。
+
+\begin{tcolorbox}[breakable,colback=LightAccent,colframe=Accent,boxrule=0.7pt,title=核心结论]
+\begin{enumerate}[leftmargin=1.6em]
+  \item 标准静态大模型是该框架的特例；
+  \item 该框架本质上是一个带可写记忆的状态空间模型；
+  \item 动态权重并不必然导致失控，只要修正项可被有界控制；
+  \item 重复验证的经验可以通过巩固映射逐渐形成长期记忆；
+  \item “元规则”和“事实知识”可以通过时间尺度分离得到清晰区分。
+\end{enumerate}
+\end{tcolorbox}
+
+\section*{五、结语}
+如果把传统模型理解为“训练结束以后，一个固定网络去处理所有未来任务”，那么这里整理出的框架更像是“训练出一套\emph{持续生长自身局部结构的规则}，再让系统在运行中不断形成可写知识”。
+
+这套表达尚不是完整理论，也没有声称已经解决持续学习、遗忘控制和在线稳定性等全部难题；但它为这些问题提供了一个统一而清晰的起点。至少在形式上，它已经把“\textbf{不直接预制全部知识，而是预制学习知识的元规则}”这一设想写成了可进一步研究的数学对象。
+
+\vspace{0.8cm}
+\noindent\textbf{一句话概括}\quad
+\[
+\boxed{\text{慢参数存元规则，快状态存经验，当前网络由二者共同生成。}}
+\]
+
+\end{document}
